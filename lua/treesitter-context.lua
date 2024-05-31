@@ -109,6 +109,9 @@ local update = throttle(function()
   assert(context_lines)
 
   open(bufnr, winid, context, context_lines)
+
+  vim.cmd.setlocal('scrolloff=' .. tostring(#context_lines - 1))
+
 end)
 
 local M = {
@@ -238,6 +241,8 @@ function M.go_to_context(depth)
 
   vim.cmd([[ normal! m' ]]) -- add current cursor position to the jump list
   api.nvim_win_set_cursor(0, { context[1] + 1, context[2] })
+
+  vim.cmd('normal! zt') -- zt the current line to top
 end
 
 return M
