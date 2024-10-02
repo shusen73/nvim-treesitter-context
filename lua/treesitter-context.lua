@@ -29,7 +29,9 @@ local function throttle_by_id(f, ms)
     f(id) -- first call, execute immediately
     timers[id]:start(ms, 0, function()
       if waiting[id] then
-        vim.schedule(function() f(id) end) -- only execute if there are calls waiting
+        vim.schedule(function()
+          f(id)
+        end) -- only execute if there are calls waiting
       end
       waiting[id] = nil
       timers[id] = nil
@@ -99,6 +101,8 @@ local update_single_context = throttle_by_id(function(winid)
   assert(context_lines)
 
   require('treesitter-context.render').open(bufnr, winid, context_ranges, context_lines)
+
+  vim.cmd.setlocal('scrolloff=' .. tostring(#context_lines - 1))
 end)
 
 local function update()
@@ -183,7 +187,11 @@ local function init()
   api.nvim_set_hl(0, 'TreesitterContext', { link = 'NormalFloat', default = true })
   api.nvim_set_hl(0, 'TreesitterContextLineNumber', { link = 'LineNr', default = true })
   api.nvim_set_hl(0, 'TreesitterContextBottom', { link = 'NONE', default = true })
-  api.nvim_set_hl(0, 'TreesitterContextLineNumberBottom', { link = 'TreesitterContextBottom', default = true })
+  api.nvim_set_hl(
+    0,
+    'TreesitterContextLineNumberBottom',
+    { link = 'TreesitterContextBottom', default = true }
+  )
   api.nvim_set_hl(0, 'TreesitterContextSeparator', { link = 'FloatBorder', default = true })
 end
 
@@ -232,6 +240,8 @@ function M.go_to_context(depth)
 
   vim.cmd([[ normal! m' ]]) -- add current cursor position to the jump list
   api.nvim_win_set_cursor(0, { context[1] + 1, context[2] })
+
+  vim.cmd('normal! zt') -- zt the current line to top
 end
 
 return M
