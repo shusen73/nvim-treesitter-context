@@ -26,16 +26,19 @@ local function get_parent_nodes(langtree, range)
 
   local ret = {} --- @type TSNode[]
 
-  if root.child_containing_descendant ~= nil then
-    local p = root
+  --- @diagnostic disable-next-line:undefined-field added in 0.11
+  if root.child_with_descendant ~= nil then
+    local p = root --- @type TSNode?
     while p do
-      table.insert(ret, 1, p)
-      p = p:child_containing_descendant(n)
+      ret[#ret + 1] = p
+      --- @diagnostic disable-next-line:undefined-field added in 0.11
+      p = p:child_with_descendant(n) --- @type TSNode?
     end
+    ret[#ret + 1] = n
   else
     while n do
-      ret[#ret + 1] = n
-      n = n:parent()
+      table.insert(ret, 1, n)
+      n = n:parent() --- @type TSNode?
     end
   end
 
@@ -64,42 +67,47 @@ local function calc_max_lines(winid)
   return max_lines
 end
 
----@param node TSNode
----@return string
-local function hash_node(node)
+--- @param node TSNode
+--- @param bufnr integer
+--- @return string
+local function hash_args(node, bufnr)
   return table.concat({
     node:id(),
     node:symbol(),
     node:child_count(),
     node:type(),
     node:range(),
+    bufnr,
   }, ',')
 end
 
 --- Run the context query on a node and return the range if it is a valid
 --- context node.
 --- @param node TSNode
+--- @param bufnr integer
 --- @param query vim.treesitter.Query
 --- @return Range4?
-local context_range = cache.memoize(function(node, query)
-  local bufnr = api.nvim_get_current_buf()
+local context_range = cache.memoize(function(node, bufnr, query)
+  --- @diagnostic disable-next-line:missing-fields
   local range = { node:range() } --- @type Range4
   range[3] = range[1] + 1
   range[4] = 0
 
   -- max_start_depth depth is only supported in nvim 0.10. It is ignored on
   -- versions 0.9 or less. It is only needed to improve performance
-  for _, match in query:iter_matches(node, bufnr, 0, -1, { max_start_depth = 0, all = false }) do
+  for _, match in query:iter_matches(node, bufnr, 0, -1, { max_start_depth = 0 }) do
     local r = false
 
-    --- @cast match table<integer,TSNode>
+    for id, nodes in pairs(match) do
+      --- In Nvim 0.9 node is a TSNode, in Nvim 0.10+ it is a list of TSNode
+      --- @type TSNode
+      local node0 = type(nodes) == 'table' and nodes[#nodes] or nodes
 
-    for id, node0 in pairs(match) do
       local srow, scol, erow, ecol = node0:range()
 
       local name = query.captures[id] -- name of the capture in the query
-      if not r and name == 'context' then
-        r = node == node0
+      if name == 'context' then
+        r = r or (node == node0)
       elseif name == 'context.start' then
         range[1] = srow
         range[2] = scol
@@ -116,10 +124,10 @@ local context_range = cache.memoize(function(node, query)
       return range
     end
   end
-end, hash_node)
+end, hash_args)
 
----@param lang string
----@return vim.treesitter.Query?
+--- @param lang string
+--- @return vim.treesitter.Query?
 local function get_context_query(lang)
   local ok, query = pcall(get_query, lang, 'context')
 
@@ -135,10 +143,10 @@ local function get_context_query(lang)
   return query
 end
 
----@param context_ranges Range4[]
----@param context_lines string[][]
----@param trim integer
----@param top boolean
+--- @param context_ranges Range4[]
+--- @param context_lines string[][]
+--- @param trim integer
+--- @param top boolean
 local function trim_contexts(context_ranges, context_lines, trim, top)
   while trim > 0 do
     local idx = top and 1 or #context_ranges
@@ -162,8 +170,9 @@ local function trim_contexts(context_ranges, context_lines, trim, top)
 end
 
 --- @param range Range4
+--- @param bufnr integer
 --- @return Range4, string[]
-local function get_text_for_range(range)
+local function get_text_for_range(range, bufnr)
   local start_row, end_row, end_col = range[1], range[3], range[4]
 
   if end_col == 0 then
@@ -171,7 +180,7 @@ local function get_text_for_range(range)
     end_col = -1
   end
 
-  local lines = api.nvim_buf_get_text(0, start_row, 0, end_row, -1, {})
+  local lines = api.nvim_buf_get_text(bufnr, start_row, 0, end_row, -1, {})
 
   -- Strip any empty lines from the node
   while #lines > 0 do
@@ -184,7 +193,10 @@ local function get_text_for_range(range)
     end_row = end_row - 1
   end
 
-  if end_col == -1 then
+  -- Adjust the end row to include the whole line. If we decide to clip
+  -- at the end column, then we also need to adjust lines.
+  -- if end_col == -1 then
+  if end_col ~= 0 then
     end_col = 0
     end_row = end_row + 1
   end
@@ -194,9 +206,9 @@ end
 
 local M = {}
 
----@param bufnr integer
----@param range Range4
----@return vim.treesitter.LanguageTree[]
+--- @param bufnr integer
+--- @param range Range4
+--- @return vim.treesitter.LanguageTree[]
 local function get_parent_langtrees(bufnr, range)
   local root_tree = vim.treesitter.get_parser(bufnr)
   if not root_tree then
@@ -250,10 +262,10 @@ end
 --- Creates a copy of a list-like table such that any nested tables are
 --- "unrolled" and appended to the result.
 ---
----@see From https://github.com/premake/premake-core/blob/master/src/base/table.lua
+--- @see From https://github.com/premake/premake-core/blob/master/src/base/table.lua
 ---
----@param t table List-like table
----@return table Flattened copy of the given list-like table
+--- @param t table List-like table
+--- @return table Flattened copy of the given list-like table
 local function tbl_flatten(t)
   local result = {}
   --- @param _t table<any,any>
@@ -325,17 +337,15 @@ function M.get(bufnr, winid)
     contexts_height = 0
 
     for parents, query in iter_context_parents(bufnr, line_range) do
-      for j = #parents, 1, -1 do
-        local parent = parents[j]
-
+      for _, parent in ipairs(parents) do
         local parent_start_row = parent:range()
         local contexts_end_row = top_row + math.min(max_lines, contexts_height)
 
         -- Only process the parent if it is not in view.
         if parent_start_row < contexts_end_row then
-          local range0 = context_range(parent, query)
+          local range0 = context_range(parent, bufnr, query)
           if range0 and range_is_valid(range0) then
-            local range, lines = get_text_for_range(range0)
+            local range, lines = get_text_for_range(range0, bufnr)
             if range_is_valid(range) then
               local last_context = context_ranges[#context_ranges]
               if last_context and parent_start_row == last_context[1] then

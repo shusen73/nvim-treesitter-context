@@ -15,78 +15,107 @@ local all_contexts = {}
 --- @param ms? number
 --- @return F
 local function throttle_by_id(f, ms)
-  ms = ms or 200
+  ms = ms or 150
+
   local timers = {} --- @type table<any,uv.uv_timer_t>
+  local state = {} --- @type table<any,string>
   local waiting = {} --- @type table<any,boolean>
-  return function(id)
-    if timers[id] == nil then
-      timers[id] = assert(vim.loop.new_timer())
-    else
-      waiting[id] = true
+
+  local function schedule(id, wrapper)
+    state[id] = 'scheduled'
+    vim.schedule_wrap(wrapper)(id, wrapper)
+  end
+
+  local function on_throttle_finish(id, wrapper)
+    assert(state[id] == 'throttled')
+    if waiting[id] == nil then
+      timers[id] = nil
+      state[id] = nil
       return
     end
+    waiting[id] = nil
+    schedule(id, wrapper)
+  end
 
-    f(id) -- first call, execute immediately
+  local function wrapper(id, self)
+    assert(state[id] == 'scheduled')
+    state[id] = 'running'
+    f(id)
+    assert(state[id] == 'running')
+    state[id] = 'throttled'
+
+    if timers[id] == nil then
+      timers[id] = assert(vim.loop.new_timer())
+    end
     timers[id]:start(ms, 0, function()
-      if waiting[id] then
-        vim.schedule(function()
-          f(id)
-        end) -- only execute if there are calls waiting
-      end
-      waiting[id] = nil
-      timers[id] = nil
+      on_throttle_finish(id, self)
     end)
+  end
+
+  return function(id)
+    if state[id] == nil then
+      schedule(id, wrapper)
+      return
+    end
+    -- Don't set 'waiting' for 'scheduled' state since the callback is about to start.
+    -- Consequently, there is no need to run it again after throttling is completed.
+    if state[id] ~= 'scheduled' then
+      waiting[id] = true
+    end
   end
 end
 
 local attached = {} --- @type table<integer,true>
 
-local function close()
-  require('treesitter-context.render').close()
+local function close(args)
+  local render = require('treesitter-context.render')
+  if args.event == 'WinClosed' then
+    -- Closing current window instead of intended window may lead to context window flickering.
+    render.close(tonumber(args.match))
+  else
+    render.close(api.nvim_get_current_win())
+  end
 end
 
----@param bufnr integer
----@param winid integer
-local function can_open(bufnr, winid)
-  if not attached[bufnr] then
-    return false
+local function close_all()
+  -- We can't close only certain windows based on the config because it might have changed.
+  local render = require('treesitter-context.render')
+  for _, winid in pairs(api.nvim_list_wins()) do
+    render.close(winid)
   end
-
-  if vim.bo[bufnr].filetype == '' then
-    return false
-  end
-
-  if vim.bo[bufnr].buftype ~= '' then
-    return false
-  end
-
-  if vim.wo[winid].previewwindow then
-    return false
-  end
-
-  if vim.fn.getcmdtype() ~= '' then
-    return false
-  end
-
-  if api.nvim_win_get_height(winid) < config.min_window_height then
-    return false
-  end
-
-  return true
 end
 
----@param winid integer
+--- @param bufnr integer
+---
+--- @param winid integer
+local function cannot_open(bufnr, winid)
+  return not attached[bufnr]
+    or vim.bo[bufnr].filetype == ''
+    or vim.bo[bufnr].buftype ~= ''
+    or vim.wo[winid].previewwindow
+    or api.nvim_win_get_height(winid) < config.min_window_height
+end
+
+--- @param winid integer
 local update_single_context = throttle_by_id(function(winid)
+  -- Remove leaked contexts firstly.
+  local current_win = api.nvim_get_current_win()
+  if config.multiwindow then
+    require('treesitter-context.render').close_leaked_contexts()
+  else
+    require('treesitter-context.render').close_other_contexts(current_win)
+  end
+
   -- Since the update is performed asynchronously, the window may be closed at this moment.
   -- Therefore, we need to check if it is still valid.
-  if not api.nvim_win_is_valid(winid) then
+  if not api.nvim_win_is_valid(winid) or vim.fn.getcmdtype() ~= '' then
     return
   end
 
   local bufnr = api.nvim_win_get_buf(winid)
 
-  if not can_open(bufnr, winid) then
-    close()
+  if cannot_open(bufnr, winid) or not config.multiwindow and winid ~= current_win then
+    require('treesitter-context.render').close(winid)
     return
   end
 
@@ -94,7 +123,7 @@ local update_single_context = throttle_by_id(function(winid)
   all_contexts[bufnr] = context_ranges
 
   if not context_ranges or #context_ranges == 0 then
-    close()
+    require('treesitter-context.render').close(winid)
     return
   end
 
@@ -105,8 +134,23 @@ local update_single_context = throttle_by_id(function(winid)
   vim.cmd.setlocal('scrolloff=' .. tostring(#context_lines - 1))
 end)
 
-local function update()
-  update_single_context(api.nvim_get_current_win())
+--- @param args table
+local function update(args)
+  if args.event == 'OptionSet' and args.match ~= 'number' and args.match ~= 'relativenumber' then
+    return
+  end
+
+  local multiwindow_events = { 'WinResized', 'User' }
+
+  if config.multiwindow and vim.tbl_contains(multiwindow_events, args.event) then
+    -- Resizing a single window may cause many resizes in different windows,
+    -- so it is necessary to iterate over all windows when a WinResized event is received.
+    for _, winid in pairs(api.nvim_list_wins()) do
+      update_single_context(winid)
+    end
+  else
+    update_single_context(api.nvim_get_current_win())
+  end
 end
 
 local M = {
@@ -115,9 +159,12 @@ local M = {
 
 local group = augroup('treesitter_context_update', {})
 
----@param event string|string[]
----@param callback fun(args: table)
----@param opts? vim.api.keyset.create_autocmd
+-- TODO(lewis6991): When nvim 0.11 is released use:
+---- @param callback fun(args: vim.api.keyset.create_autocmd.callback_args):boolean?
+
+--- @param event string|string[]
+--- @param callback fun(args: vim.api.keyset.create_autocmd.callback_args):boolean?
+--- @param opts? vim.api.keyset.create_autocmd
 local function autocmd(event, callback, opts)
   opts = opts or {}
   opts.callback = callback
@@ -125,45 +172,98 @@ local function autocmd(event, callback, opts)
   api.nvim_create_autocmd(event, opts)
 end
 
+--- @param bufnr integer
+--- @return boolean?
+local function should_attach(bufnr)
+  if not config.on_attach or config.on_attach(bufnr) ~= false then
+    return true
+  end
+  return nil
+end
+
+--- @param req { type:string, method: string }
+--- @return boolean
+local function is_semantic_tokens_request(req)
+  local ms = require('vim.lsp.protocol').Methods
+  return req.type == 'complete'
+    and (
+      req.method == ms.textDocument_semanticTokens_full
+      or req.method == ms.textDocument_semanticTokens_full_delta
+      or req.method == ms.textDocument_semanticTokens_range
+    )
+end
+
 function M.enable()
-  local cbuf = api.nvim_get_current_buf()
+  if enabled then
+    -- Some options may have changed.
+    -- We need to reload all contexts and clear autocommands first.
+    M.disable()
+  end
 
-  attached[cbuf] = true
+  -- Restore attached table after reloading.
+  for _, bufnr in pairs(api.nvim_list_bufs()) do
+    if api.nvim_buf_is_loaded(bufnr) then
+      attached[bufnr] = should_attach(bufnr)
+    end
+  end
 
-  autocmd({ 'WinScrolled', 'BufEnter', 'WinEnter', 'VimResized', 'DiagnosticChanged' }, update)
+  local update_events = {
+    'WinScrolled',
+    'BufEnter',
+    'WinEnter',
+    'VimResized',
+    'CursorMoved',
+    'OptionSet',
+  }
+
+  if config.multiwindow then
+    table.insert(update_events, 'WinResized')
+  end
+
+  autocmd(update_events, update)
+
+  autocmd('DiagnosticChanged', vim.schedule_wrap(update))
 
   autocmd('BufReadPost', function(args)
-    attached[args.buf] = nil
-    if not config.on_attach or config.on_attach(args.buf) ~= false then
-      attached[args.buf] = true
-    end
+    attached[args.buf] = should_attach(args.buf)
   end)
 
   autocmd('BufDelete', function(args)
     attached[args.buf] = nil
   end)
 
-  autocmd('CursorMoved', update)
-
-  autocmd('OptionSet', function(args)
-    if args.match == 'number' or args.match == 'relativenumber' then
-      update()
-    end
-  end)
-
-  autocmd({ 'BufLeave', 'WinLeave' }, close)
+  if config.multiwindow then
+    autocmd({ 'WinClosed' }, close)
+  else
+    autocmd({ 'BufLeave', 'WinLeave', 'WinClosed' }, close)
+  end
 
   autocmd('User', close, { pattern = 'SessionSavePre' })
   autocmd('User', update, { pattern = 'SessionSavePost' })
 
-  update()
+  autocmd('LspRequest', function(args)
+    if is_semantic_tokens_request(args.data.request) then
+      vim.schedule(function()
+        update(args)
+      end)
+    end
+  end)
+
+  if config.multiwindow then
+    for _, winid in pairs(api.nvim_list_wins()) do
+      update_single_context(winid)
+    end
+  else
+    update_single_context(api.nvim_get_current_win())
+  end
+
   enabled = true
 end
 
 function M.disable()
   augroup('treesitter_context_update', {})
   attached = {}
-  close()
+  close_all()
   enabled = false
 end
 
@@ -197,8 +297,9 @@ end
 
 local did_init = false
 
----@param options? TSContext.UserConfig
+--- @param options? TSContext.UserConfig
 function M.setup(options)
+  -- NB: setup  may be called several times.
   if options then
     config.update(options)
   end
@@ -215,7 +316,7 @@ function M.setup(options)
   end
 end
 
----@param depth integer? default 1
+--- @param depth integer? default 1
 function M.go_to_context(depth)
   depth = depth or 1
   local line = api.nvim_win_get_cursor(0)[1]
