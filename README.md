@@ -22,6 +22,7 @@ Note: support for specific languages is strictly community maintained and can br
 <details>
 <summary>Supported (click to expand)</summary
 
+  - [x] `org`
   - [x] `ada`
   - [x] `apex`
   - [x] `bash`
@@ -39,12 +40,14 @@ Note: support for specific languages is strictly community maintained and can br
   - [x] `devicetree`
   - [x] `diff`
   - [x] `elixir`
+  - [x] `enforce`
   - [x] `elm`
   - [x] `fennel`
   - [x] `fish`
   - [x] `fortran`
   - [x] `gdscript`
   - [x] `glimmer`
+  - [x] `glsl`
   - [x] `go`
   - [x] `graphql`
   - [x] `groovy`
@@ -72,7 +75,6 @@ Note: support for specific languages is strictly community maintained and can br
   - [x] `ocaml`
   - [x] `ocaml_interface`
   - [x] `odin`
-  - [x] `org`
   - [x] `php`
   - [x] `php_only`
   - [x] `prisma`
@@ -174,7 +176,6 @@ Note: support for specific languages is strictly community maintained and can br
   - [ ] `gleam`
   - [ ] `glimmer_javascript`
   - [ ] `glimmer_typescript`
-  - [ ] `glsl`
   - [ ] `gn`
   - [ ] `gnuplot`
   - [ ] `goctl`
@@ -202,8 +203,12 @@ Note: support for specific languages is strictly community maintained and can br
   - [ ] `hurl`
   - [ ] `hyprlang`
   - [ ] `idl`
+  - [ ] `idris`
   - [ ] `inko`
+  - [ ] `ipkg`
   - [ ] `ispc`
+  - [ ] `jinja`
+  - [ ] `jinja_inline`
   - [ ] `jq`
   - [ ] `jsdoc`
   - [ ] `json5`
@@ -266,6 +271,7 @@ Note: support for specific languages is strictly community maintained and can br
   - [ ] `racket`
   - [ ] `ralph`
   - [ ] `rasi`
+  - [ ] `razor`
   - [ ] `rbs`
   - [ ] `re2c`
   - [ ] `readline`
@@ -284,6 +290,7 @@ Note: support for specific languages is strictly community maintained and can br
   - [ ] `scheme`
   - [ ] `sflog`
   - [ ] `slang`
+  - [ ] `slim`
   - [ ] `slint`
   - [ ] `smithy`
   - [ ] `snakemake`
